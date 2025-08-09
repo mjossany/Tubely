@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -38,6 +39,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		respondWithError(w, http.StatusBadRequest, "Unable to parse form file", err)
 		return
 	}
+
 	contentType := header.Header.Get("Content-Type")
 	if contentType == "" {
 		respondWithError(w, http.StatusBadRequest, "Invalid Content-Type header", err)
@@ -50,6 +52,9 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	imageDataString := base64.StdEncoding.EncodeToString(imageData)
+	dataURL := fmt.Sprintf("data:%s;base64,%s", contentType, imageDataString)
+
 	videoMetadata, err := cfg.db.GetVideo(videoID)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Error while retrieving video metadata from database", err)
@@ -60,15 +65,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	thumbnail := thumbnail{
-		data:      imageData,
-		mediaType: contentType,
-	}
-
-	videoThumbnails[videoID] = thumbnail
-
-	thumbnailUrl := fmt.Sprintf("http://localhost:%s/api/thumbnails/{%s}", cfg.port, videoID)
-	videoMetadata.ThumbnailURL = &thumbnailUrl
+	videoMetadata.ThumbnailURL = &dataURL
 
 	err = cfg.db.UpdateVideo(videoMetadata)
 	if err != nil {
