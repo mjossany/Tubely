@@ -109,6 +109,20 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	processedFilePath, err := processVideoForFastStart(tmpFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Internal Server Error", err)
+		return
+	}
+	os.Remove(tmpFile.Name())
+
+	processedFile, err := os.Open(processedFilePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Internal Server Error", err)
+		return
+	}
+	defer processedFile.Close()
+
 	directory := ""
 	directory = setAspectRatioPrefixToKey(aspectRatio)
 	fileName = path.Join(directory, fileName)
@@ -118,12 +132,16 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
 		Key:         &fileName,
-		Body:        tmpFile,
+		Body:        processedFile,
 		ContentType: &mediaType,
 	})
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Internal Server Error", err)
 		return
+	}
+
+	if err := os.Remove(tmpFile.Name()); err != nil {
+		fmt.Printf("Warning: failed to remove processed file: %v\n", err)
 	}
 
 	url := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, fileName)
@@ -189,4 +207,27 @@ func setAspectRatioPrefixToKey(aspectRatio string) string {
 	}
 
 	return prefix
+}
+
+func processVideoForFastStart(inputFilePath string) (string, error) {
+	processedFilePath := fmt.Sprintf("%s.processing", inputFilePath)
+
+	cmd := exec.Command("ffmpeg", "-i", inputFilePath, "-movflags", "faststart", "-codec", "copy", "-f", "mp4", processedFilePath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("error processing video: %s, %v", stderr.String(), err)
+	}
+
+	fileInfo, err := os.Stat(processedFilePath)
+	if err != nil {
+		return "", fmt.Errorf("could not stat processed file: %v", err)
+	}
+
+	if fileInfo.Size() == 0 {
+		return "", fmt.Errorf("processed file is empty")
+	}
+
+	return processedFilePath, nil
 }
