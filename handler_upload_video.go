@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,9 +11,12 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
+	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
 	"github.com/google/uuid"
 )
 
@@ -144,7 +148,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		fmt.Printf("Warning: failed to remove processed file: %v\n", err)
 	}
 
-	url := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, fileName)
+	url := fmt.Sprintf("%s,%s", cfg.s3Bucket, fileName)
 	videoData.VideoURL = &url
 
 	err = cfg.db.UpdateVideo(videoData)
@@ -153,7 +157,13 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, videoData)
+	signedVideo, err := cfg.dbVideoToSignedVideo(videoData)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Internal Server Error", err)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, signedVideo)
 }
 
 func getVideoAspectRatio(filepath string) (string, error) {
@@ -230,4 +240,35 @@ func processVideoForFastStart(inputFilePath string) (string, error) {
 	}
 
 	return processedFilePath, nil
+}
+
+func generatePresignedUrl(s3Client *s3.Client, bucket, key string, expireTime time.Duration) (string, error) {
+	presignClient := s3.NewPresignClient(s3Client)
+	preSignedHttpRequest, err := presignClient.PresignGetObject(context.TODO(), &s3.GetObjectInput{
+		Bucket: &bucket,
+		Key:    &key,
+	}, s3.WithPresignExpires(expireTime))
+	if err != nil {
+		return "", fmt.Errorf("error generating presigned http request: %v", err)
+	}
+
+	return preSignedHttpRequest.URL, nil
+}
+
+func (cfg *apiConfig) dbVideoToSignedVideo(video database.Video) (database.Video, error) {
+	if video.VideoURL == nil {
+		return database.Video{}, fmt.Errorf("video URL is not set for video ID: %s", video.ID.String())
+	}
+	videoURL := video.VideoURL
+	videoURLSlice := strings.Split(*videoURL, ",")
+	if len(videoURLSlice) < 2 {
+		return database.Video{}, fmt.Errorf("invalid video URL format: expected comma-separated values, got %s: ", *videoURL)
+	}
+	presignedUrl, err := generatePresignedUrl(cfg.s3Client, videoURLSlice[0], videoURLSlice[1], 5*time.Minute)
+	if err != nil {
+		return database.Video{}, err
+	}
+
+	video.VideoURL = &presignedUrl
+	return video, nil
 }

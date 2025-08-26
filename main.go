@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -61,6 +62,7 @@ func main() {
 	}
 
 	s3Bucket := os.Getenv("S3_BUCKET")
+	fmt.Printf("BUCKET: %s", s3Bucket)
 	if s3Bucket == "" {
 		log.Fatal("S3_BUCKET environment variable is not set")
 	}
